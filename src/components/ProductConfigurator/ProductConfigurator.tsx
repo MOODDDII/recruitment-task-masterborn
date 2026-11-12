@@ -217,7 +217,9 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
           setValidation(result);
           setIsValid(true);
         }
-      } catch {}
+      } catch {
+        // Keep the previous validation result if the request fails.
+      }
     };
 
     validate();
@@ -252,6 +254,7 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
     if (onConfigurationChange) {
       onConfigurationChange(currentConfig);
     }
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- dirty tracking is reworked in CFG-157
     setIsDirty(true);
   }, [selections, selectedAddOns, quantity]);
 
@@ -265,6 +268,7 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
     if (showShareModal) {
       const encoded = encodeConfigurationToUrl(currentConfig);
       const url = `${window.location.origin}${window.location.pathname}?config=${encoded}`;
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- share URL handling is reworked in CFG-147
       setShareUrl(url);
     }
   }, [showShareModal, currentConfig]);
@@ -276,9 +280,11 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
     if (encodedConfig) {
       const decoded = decodeConfigurationFromUrl(encodedConfig);
       if (decoded) {
+        /* eslint-disable react-hooks/set-state-in-effect -- one-off hydration from URL, revisited in CFG-147 */
         if (decoded.selections) setSelections(decoded.selections);
         if (decoded.addOns) setSelectedAddOns(decoded.addOns);
         if (decoded.quantity) setQuantity(decoded.quantity);
+        /* eslint-enable react-hooks/set-state-in-effect */
       }
     }
   }, []);
@@ -294,24 +300,17 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
         [optionId]: value,
       }));
 
-      const option = product.options.find((o) => o.id === optionId);
-      // Clean up any dependent add-ons whose requirement is no longer met.
-      // Toggles are handled in handleAddOnToggle, so we only need to do this for select options.
-      if (option && option.type === 'select') {
-        const dependentAddOns = product.addOns.filter((a) => a.dependsOn?.optionId === optionId);
+      // Drop add-ons whose requirement is no longer met by this change.
+      // Applies to every option type (select, toggle, ...), and updates state immutably.
+      const unmetAddOnIds = product.addOns
+        .filter((a) => a.dependsOn?.optionId === optionId && value !== a.dependsOn.requiredValue)
+        .map((a) => a.id);
 
-        for (const addOn of dependentAddOns) {
-          if (addOn.dependsOn && value !== addOn.dependsOn.requiredValue) {
-            const index = selectedAddOns.indexOf(addOn.id);
-            if (index > -1) {
-              selectedAddOns.splice(index, 1);
-              setSelectedAddOns(selectedAddOns);
-            }
-          }
-        }
+      if (unmetAddOnIds.length > 0) {
+        setSelectedAddOns((prev) => prev.filter((id) => !unmetAddOnIds.includes(id)));
       }
     },
-    [product.options, product.addOns, selectedAddOns],
+    [product.addOns],
   );
 
   const handleAddOnToggle = useCallback(
@@ -932,10 +931,9 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
                 <span>Add-ons ({selectedAddOns.length}):</span>
                 <span>
                   {selectedAddOns
-                    .map((id) => {
-                      const addOn = availableAddOns.get(id)!;
-                      return formatPrice(addOn.price, product.currency);
-                    })
+                    .map((id) => availableAddOns.get(id))
+                    .filter((addOn): addOn is AddOn => addOn !== undefined)
+                    .map((addOn) => formatPrice(addOn.price, product.currency))
                     .join(' + ')}
                 </span>
               </div>
