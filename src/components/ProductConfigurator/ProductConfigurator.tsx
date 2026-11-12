@@ -18,7 +18,7 @@
  * - "Resize handler might have a leak" - Marcus
  */
 
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useEffectEvent, useCallback, useMemo, useRef } from 'react';
 import type {
   Product,
   ProductOption,
@@ -104,6 +104,25 @@ const calculateColorColumns = (
   return Math.max(1, columns);
 };
 
+const DEFAULT_ERROR_MESSAGE =
+  'Something went wrong. Please try again, or contact support if the problem continues.';
+
+// User facing messages for internal error codes. Each one says what happened and what to do next.
+const ERROR_MESSAGES: Record<string, string> = {
+  [ERROR_CODES.PRICE_CALC_FAILED]:
+    "We couldn't update the price. Please try again in a moment, or contact support if it keeps happening.",
+  [ERROR_CODES.NETWORK_TIMEOUT]:
+    'The price is taking too long to load. Please check your connection and try again.',
+  [ERROR_CODES.VALIDATION_CONFLICT]:
+    "Some of your selections don't work together. Please review your options and try again.",
+  [ERROR_CODES.DEPENDENCY_MISSING]:
+    'This add-on needs another option to be selected first. Please check the add-on description.',
+  [ERROR_CODES.INVALID_QUANTITY]: 'Please enter a quantity of at least 1.',
+  [ERROR_CODES.UNKNOWN]: DEFAULT_ERROR_MESSAGE,
+};
+
+const getErrorMessage = (code: string): string => ERROR_MESSAGES[code] ?? DEFAULT_ERROR_MESSAGE;
+
 // ============================================================================
 // Main Component
 // ============================================================================
@@ -133,6 +152,7 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
 
   const [isDirty, setIsDirty] = useState(false);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
+  const [lastSavedDraftId, setLastSavedDraftId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
 
   const [showDraftModal, setShowDraftModal] = useState(false);
@@ -145,8 +165,6 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
   const [previewUrl, setPreviewUrl] = useState<string>(product.imageUrl);
 
   const [error, setError] = useState<string | null>(null);
-
-  const [shareUrl, setShareUrl] = useState<string>('');
 
   const containerRef = useRef<HTMLDivElement>(null);
   const colorPickerRef = useRef<HTMLDivElement>(null);
@@ -177,8 +195,16 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
     error: priceError,
   } = usePriceCalculation(currentConfig, product);
 
+  const errorCode = error || priceError;
+
   const appliedDiscount = getAppliedDiscountPercentage(quantity);
   const nextTier = getNextDiscountTier(quantity);
+
+  const shareUrl = useMemo(() => {
+    if (!showShareModal) return '';
+    const encoded = encodeConfigurationToUrl(currentConfig);
+    return `${window.location.origin}${window.location.pathname}?config=${encoded}`;
+  }, [showShareModal, currentConfig]);
 
   const availableAddOns = useMemo(() => {
     const map = new Map<string, AddOn>();
@@ -205,6 +231,8 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
 
     window.addEventListener('resize', handleResize);
     handleResize();
+
+    return () => window.removeEventListener('resize', handleResize);
   }, []);
 
   useEffect(() => {
@@ -217,7 +245,9 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
           setValidation(result);
           setIsValid(true);
         }
-      } catch {}
+      } catch {
+        // Keep the previous validation result if the request fails.
+      }
     };
 
     validate();
@@ -248,10 +278,15 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
     };
   }, [currentConfig, product]);
 
+  // Reads the latest config and callback without making them effect dependencies, so the effect
+  // keeps firing only when the configuration itself changes (not e.g. when typing a draft name).
+  const notifyConfigurationChange = useEffectEvent(() => {
+    onConfigurationChange?.(currentConfig);
+  });
+
   useEffect(() => {
-    if (onConfigurationChange) {
-      onConfigurationChange(currentConfig);
-    }
+    notifyConfigurationChange();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- dirty tracking is reworked in CFG-157
     setIsDirty(true);
   }, [selections, selectedAddOns, quantity]);
 
@@ -262,23 +297,18 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
   }, [showDraftModal]);
 
   useEffect(() => {
-    if (showShareModal) {
-      const encoded = encodeConfigurationToUrl(currentConfig);
-      const url = `${window.location.origin}${window.location.pathname}?config=${encoded}`;
-      setShareUrl(url);
-    }
-  }, [showShareModal, currentConfig]);
-
-  useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const encodedConfig = params.get('config');
 
     if (encodedConfig) {
       const decoded = decodeConfigurationFromUrl(encodedConfig);
       if (decoded) {
+        /* eslint-disable react-hooks/set-state-in-effect -- one-off hydration from the URL on mount */
         if (decoded.selections) setSelections(decoded.selections);
         if (decoded.addOns) setSelectedAddOns(decoded.addOns);
         if (decoded.quantity) setQuantity(decoded.quantity);
+        if (decoded.name) setDraftName(decoded.name);
+        /* eslint-enable react-hooks/set-state-in-effect */
       }
     }
   }, []);
@@ -289,29 +319,23 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
 
   const handleOptionChange = useCallback(
     (optionId: string, value: string | number | boolean) => {
+      setError(null);
       setSelections((prev) => ({
         ...prev,
         [optionId]: value,
       }));
 
-      const option = product.options.find((o) => o.id === optionId);
-      // Clean up any dependent add-ons whose requirement is no longer met.
-      // Toggles are handled in handleAddOnToggle, so we only need to do this for select options.
-      if (option && option.type === 'select') {
-        const dependentAddOns = product.addOns.filter((a) => a.dependsOn?.optionId === optionId);
+      // Drop add-ons whose requirement is no longer met by this change.
+      // Applies to every option type (select, toggle, ...), and updates state immutably.
+      const unmetAddOnIds = product.addOns
+        .filter((a) => a.dependsOn?.optionId === optionId && value !== a.dependsOn.requiredValue)
+        .map((a) => a.id);
 
-        for (const addOn of dependentAddOns) {
-          if (addOn.dependsOn && value !== addOn.dependsOn.requiredValue) {
-            const index = selectedAddOns.indexOf(addOn.id);
-            if (index > -1) {
-              selectedAddOns.splice(index, 1);
-              setSelectedAddOns(selectedAddOns);
-            }
-          }
-        }
+      if (unmetAddOnIds.length > 0) {
+        setSelectedAddOns((prev) => prev.filter((id) => !unmetAddOnIds.includes(id)));
       }
     },
-    [product.options, product.addOns, selectedAddOns],
+    [product.addOns],
   );
 
   const handleAddOnToggle = useCallback(
@@ -319,6 +343,7 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
       const addOn = product.addOns.find((a) => a.id === addOnId);
       if (!addOn) return;
 
+      setError(null);
       if (!isAddOnAvailable(addOn, selections)) {
         setError(ERROR_CODES.DEPENDENCY_MISSING);
         return;
@@ -337,6 +362,7 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
 
   const handleQuantityChange = useCallback(
     (newQuantity: number) => {
+      setError(null);
       const quantityOption = product.options.find((o) => o.type === 'quantity');
       const min = quantityOption?.min ?? 1;
       const max = quantityOption?.max ?? 999;
@@ -349,8 +375,9 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
 
   const handleSaveDraft = useCallback(async () => {
     try {
-      await saveDraft(currentConfig, draftName || 'Untitled Draft');
+      const saved = await saveDraft(currentConfig, draftName || 'Untitled Draft');
       setLastSaved(new Date());
+      setLastSavedDraftId(saved.id);
       setIsDirty(false);
       setDraftName('');
 
@@ -375,16 +402,26 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
     }
   }, []);
 
-  const handleDeleteDraft = useCallback(async (draftId: string) => {
-    try {
-      await deleteDraft(draftId);
-      setDrafts((prev) => prev.filter((d) => d.id !== draftId));
-    } catch {
-      setError(ERROR_CODES.UNKNOWN);
-    }
-  }, []);
+  const handleDeleteDraft = useCallback(
+    async (draftId: string) => {
+      try {
+        await deleteDraft(draftId);
+        setDrafts((prev) => prev.filter((d) => d.id !== draftId));
+
+        // Hide the "Draft saved" panel if it refers to the draft that was just deleted
+        if (draftId === lastSavedDraftId) {
+          setLastSaved(null);
+          setLastSavedDraftId(null);
+        }
+      } catch {
+        setError(ERROR_CODES.UNKNOWN);
+      }
+    },
+    [lastSavedDraftId],
+  );
 
   const handleAddToCart = useCallback(() => {
+    setError(null);
     if (!validation?.valid) {
       setError(validation?.errors[0]?.code || ERROR_CODES.UNKNOWN);
       return;
@@ -472,6 +509,26 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
 
   const renderColorOption = (option: ProductOption) => {
     const currentValue = selections[option.id] as string;
+    const choices = option.choices ?? [];
+
+    // Roving tabindex: the group is a single tab stop (the selected swatch, or the first one),
+    // and arrow keys move between swatches.
+    const selectedIndex = choices.findIndex((c) => c.value === currentValue);
+    const tabStopIndex = selectedIndex >= 0 ? selectedIndex : 0;
+
+    const handleSwatchKeyDown = (e: React.KeyboardEvent, index: number) => {
+      const step = ['ArrowRight', 'ArrowDown'].includes(e.key)
+        ? 1
+        : ['ArrowLeft', 'ArrowUp'].includes(e.key)
+          ? -1
+          : 0;
+      if (step === 0 || readOnly) return;
+
+      e.preventDefault();
+      const nextIndex = (index + step + choices.length) % choices.length;
+      handleOptionChange(option.id, choices[nextIndex].value);
+      colorPickerRef.current?.querySelectorAll<HTMLElement>('[role="radio"]')[nextIndex]?.focus();
+    };
 
     return (
       <div className="option-group" key={option.id}>
@@ -485,15 +542,20 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
           role="radiogroup"
           aria-label={option.name}
         >
-          {option.choices?.map((choice, index) => (
-            <div
-              key={index}
+          {choices.map((choice, index) => (
+            <button
+              key={choice.id}
+              type="button"
               className={`color-swatch ${currentValue === choice.value ? 'selected' : ''}`}
               style={{ backgroundColor: choice.colorHex }}
-              onClick={() => !readOnly && handleOptionChange(option.id, choice.value)}
+              onClick={() => handleOptionChange(option.id, choice.value)}
+              onKeyDown={(e) => handleSwatchKeyDown(e, index)}
               title={choice.label}
               role="radio"
               aria-checked={currentValue === choice.value}
+              aria-label={choice.label}
+              tabIndex={index === tabStopIndex ? 0 : -1}
+              disabled={readOnly}
             />
           ))}
         </div>
@@ -599,7 +661,7 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
 
     return (
       <div
-        key={addOn.name}
+        key={addOn.id}
         className={`addon-item ${isSelected ? 'selected' : ''} ${!isAvailable ? 'disabled' : ''}`}
         onClick={() => !readOnly && isAvailable && handleAddOnToggle(addOn.id)}
       >
@@ -634,10 +696,10 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
           <span>{formatPrice(price.basePrice, product.currency)}</span>
         </div>
 
-        {price.optionModifiers.map((mod, i) => {
+        {price.optionModifiers.map((mod) => {
           const option = product.options.find((o) => o.id === mod.optionId);
           return (
-            <div className="price-line" key={i}>
+            <div className="price-line" key={mod.optionId}>
               <span>{option?.name || mod.optionId}</span>
               <span>
                 {mod.amount >= 0 ? '+' : ''}
@@ -647,10 +709,10 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
           );
         })}
 
-        {price.addOnCosts.map((cost, i) => {
+        {price.addOnCosts.map((cost) => {
           const addOn = product.addOns.find((a) => a.id === cost.addOnId);
           return (
-            <div className="price-line" key={i}>
+            <div className="price-line" key={cost.addOnId}>
               <span>{addOn?.name || cost.addOnId}</span>
               <span>+{formatPrice(cost.amount, product.currency)}</span>
             </div>
@@ -842,15 +904,14 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
         </div>
       </div>
 
-      {(error || priceError) && (
-        <div className="error-message">
-          <div>Something went wrong. Please try again.</div>
-          <div className="error-code">Error: {error || priceError}</div>
+      {errorCode && (
+        <div className="error-message" data-error-code={errorCode}>
+          {getErrorMessage(errorCode)}
         </div>
       )}
 
-      {validation?.warnings.map((warning, i) => (
-        <div key={i} className="validation-warning">
+      {validation?.warnings.map((warning) => (
+        <div key={warning.code} className="validation-warning">
           {warning.message}
         </div>
       ))}
@@ -876,7 +937,14 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
 
           <div className={`price-display ${isPriceLoading ? 'price-loading' : ''}`}>
             <div className="price-label">Total Price</div>
-            <div className="price-value">{formattedTotal}</div>
+            <div
+              className="price-value"
+              aria-live="polite"
+              aria-atomic="true"
+              aria-busy={isPriceLoading}
+            >
+              {formattedTotal}
+            </div>
 
             {renderPriceBreakdown()}
 
@@ -932,10 +1000,9 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
                 <span>Add-ons ({selectedAddOns.length}):</span>
                 <span>
                   {selectedAddOns
-                    .map((id) => {
-                      const addOn = availableAddOns.get(id)!;
-                      return formatPrice(addOn.price, product.currency);
-                    })
+                    .map((id) => availableAddOns.get(id))
+                    .filter((addOn): addOn is AddOn => addOn !== undefined)
+                    .map((addOn) => formatPrice(addOn.price, product.currency))
                     .join(' + ')}
                 </span>
               </div>

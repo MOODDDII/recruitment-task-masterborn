@@ -16,13 +16,7 @@ function App() {
   }, []);
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        backgroundColor: '#f5f5f5',
-        padding: '24px',
-      }}
-    >
+    <div className="App">
       <ProductConfigurator
         product={mockProduct}
         onConfigurationChange={handleConfigurationChange}
