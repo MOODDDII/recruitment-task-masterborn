@@ -1,14 +1,23 @@
 // usePriceCalculation Hook
-// Marcus: "This hook handles async price fetching. A bit janky but works."
+//
+// Fetches the price for a configuration from the (mocked) pricing API.
+//
+// Race-condition strategy: every distinct request gets a key derived from the
+// pricing inputs. The effect cancels its own response on cleanup, so a slow
+// response for an old configuration can never overwrite a newer one. We do NOT
+// rely on server-provided ordering (the API's `timestamp` is an opaque id, not
+// a clock), and `isLoading` is derived from "has the latest key settled?"
+// rather than toggled by individual requests.
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useEffectEvent } from 'react';
 import type {
   Configuration,
   Product,
   PriceBreakdown,
-  PriceResponse,
 } from '../components/ProductConfigurator/types';
+import { ERROR_CODES } from '../components/ProductConfigurator/types';
 import { calculatePrice } from '../services/api';
+import { formatPrice } from '../utils/pricing';
 
 interface UsePriceCalculationResult {
   price: PriceBreakdown | null;
@@ -18,144 +27,65 @@ interface UsePriceCalculationResult {
   refetch: () => void;
 }
 
+type Outcome =
+  | { key: string; status: 'success'; breakdown: PriceBreakdown; formattedTotal: string }
+  | { key: string; status: 'error' };
+
 /**
- * Custom hook for managing price calculation
+ * Custom hook for managing price calculation.
+ *
+ * While a newer request is in flight, the last successful price is kept so the
+ * UI doesn't flash empty.
  */
 export function usePriceCalculation(
   config: Configuration | null,
   product: Product,
 ): UsePriceCalculationResult {
-  const [price, setPrice] = useState<PriceBreakdown | null>(null);
-  const [formattedTotal, setFormattedTotal] = useState<string>('$0.00');
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [outcome, setOutcome] = useState<Outcome | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
 
-  // Track latest request timestamp to prevent stale responses from overwriting newer ones.
-  // Guards against race conditions when the user changes options in rapid succession.
-  const latestRequestRef = useRef<number>(0);
+  // Typing a draft name doesn't trigger a refetch.
+  const requestKey = config
+    ? JSON.stringify([product.id, config.selections, config.addOns, config.quantity, retryCount])
+    : null;
 
-  const fetchPrice = useCallback(async () => {
-    if (!config) {
-      setPrice(null);
-      setFormattedTotal('$0.00');
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
-
-    const requestTime = Date.now();
-    latestRequestRef.current = requestTime;
-
-    try {
-      const response: PriceResponse = await calculatePrice(config, product);
-
-      if (response.timestamp >= latestRequestRef.current) {
-        setPrice(response.breakdown);
-        setFormattedTotal(response.formattedTotal);
-      }
-    } catch {
-      // Only set error if this is still the latest request
-      if (requestTime === latestRequestRef.current) {
-        setError('ERR_PRICE_CALC_FAILED');
-        setPrice(null);
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  }, [config, product]);
-
-  // Fetch price when config changes
-  useEffect(() => {
-    fetchPrice();
-  }, [config?.selections, config?.addOns, config?.quantity]);
-
-  return {
-    price,
-    formattedTotal,
-    isLoading,
-    error,
-    refetch: fetchPrice,
-  };
-}
-
-/**
- * Debounced version of price calculation
- */
-export function useDebouncedPriceCalculation(
-  config: Configuration | null,
-  product: Product,
-  delay: number = 300,
-): UsePriceCalculationResult {
-  const [price, setPrice] = useState<PriceBreakdown | null>(null);
-  const [formattedTotal, setFormattedTotal] = useState<string>('$0.00');
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const configRef = useRef(config);
+  // Reads the latest config/product without making them effect dependencies.
+  const requestPrice = useEffectEvent(() => calculatePrice(config!, product));
 
   useEffect(() => {
-    // Clear any pending timeout
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-    }
+    if (requestKey === null) return;
 
-    if (!config) {
-      setPrice(null);
-      setFormattedTotal('$0.00');
-      setIsLoading(false);
-      return;
-    }
+    let cancelled = false;
 
-    setIsLoading(true);
-
-    timeoutRef.current = setTimeout(async () => {
-      try {
-        const response = await calculatePrice(configRef.current!, product);
-        setPrice(response.breakdown);
-        setFormattedTotal(response.formattedTotal);
-        setError(null);
-      } catch {
-        setError('ERR_PRICE_CALC_FAILED');
-      } finally {
-        setIsLoading(false);
-      }
-    }, delay);
-
-    configRef.current = config;
+    requestPrice()
+      .then((response) => {
+        if (cancelled) return;
+        setOutcome({
+          key: requestKey,
+          status: 'success',
+          breakdown: response.breakdown,
+          formattedTotal: response.formattedTotal,
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setOutcome({ key: requestKey, status: 'error' });
+      });
 
     return () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
+      cancelled = true;
     };
-  }, [config, product, delay]);
+  }, [requestKey]);
 
-  const refetch = useCallback(() => {
-    if (config) {
-      setIsLoading(true);
-      calculatePrice(config, product)
-        .then((response) => {
-          setPrice(response.breakdown);
-          setFormattedTotal(response.formattedTotal);
-          setError(null);
-        })
-        .catch(() => {
-          setError('ERR_PRICE_CALC_FAILED');
-        })
-        .finally(() => {
-          setIsLoading(false);
-        });
-    }
-  }, [config, product]);
+  const isCurrent = outcome !== null && outcome.key === requestKey;
+  const isLoading = requestKey !== null && !isCurrent;
+  const hasPrice = requestKey !== null && outcome?.status === 'success';
 
   return {
-    price,
-    formattedTotal,
+    price: hasPrice ? outcome.breakdown : null,
+    formattedTotal: hasPrice ? outcome.formattedTotal : formatPrice(0, product.currency),
     isLoading,
-    error,
-    refetch,
+    error: isCurrent && outcome.status === 'error' ? ERROR_CODES.PRICE_CALC_FAILED : null,
+    refetch: () => setRetryCount((count) => count + 1),
   };
 }
