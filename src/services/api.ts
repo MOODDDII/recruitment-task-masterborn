@@ -209,6 +209,24 @@ function formatCurrency(amount: number, currency: string): string {
   }).format(amount);
 }
 
+// btoa/atob only handle Latin-1, so text is converted to UTF-8 bytes first. The base64url
+// alphabet (- and _ instead of + and /, no padding) survives query strings unchanged.
+function toBase64Url(text: string): string {
+  let binary = '';
+  for (const byte of new TextEncoder().encode(text)) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function fromBase64Url(encoded: string): string {
+  // A literal "+" in a query string is read as a space, so accept that for links made by the
+  // previous (standard base64) encoder.
+  const base64 = encoded.replace(/ /g, '+').replace(/-/g, '+').replace(/_/g, '/');
+  const binary = atob(base64);
+  return new TextDecoder().decode(Uint8Array.from(binary, (char) => char.charCodeAt(0)));
+}
+
 /**
  * Encode configuration to URL-safe string
  */
@@ -220,7 +238,7 @@ export function encodeConfigurationToUrl(config: Configuration): string {
     n: config.name,
   });
 
-  return btoa(data);
+  return toBase64Url(data);
 }
 
 /**
@@ -228,7 +246,7 @@ export function encodeConfigurationToUrl(config: Configuration): string {
  */
 export function decodeConfigurationFromUrl(encoded: string): Partial<Configuration> | null {
   try {
-    const data = JSON.parse(atob(encoded));
+    const data = JSON.parse(fromBase64Url(encoded));
     return {
       selections: data.s || {},
       addOns: data.a || [],

@@ -146,8 +146,6 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
 
   const [error, setError] = useState<string | null>(null);
 
-  const [shareUrl, setShareUrl] = useState<string>('');
-
   const containerRef = useRef<HTMLDivElement>(null);
   const colorPickerRef = useRef<HTMLDivElement>(null);
   const lastFocusedElement = useRef<HTMLElement | null>(null);
@@ -179,6 +177,12 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
 
   const appliedDiscount = getAppliedDiscountPercentage(quantity);
   const nextTier = getNextDiscountTier(quantity);
+
+  const shareUrl = useMemo(() => {
+    if (!showShareModal) return '';
+    const encoded = encodeConfigurationToUrl(currentConfig);
+    return `${window.location.origin}${window.location.pathname}?config=${encoded}`;
+  }, [showShareModal, currentConfig]);
 
   const availableAddOns = useMemo(() => {
     const map = new Map<string, AddOn>();
@@ -265,25 +269,17 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
   }, [showDraftModal]);
 
   useEffect(() => {
-    if (showShareModal) {
-      const encoded = encodeConfigurationToUrl(currentConfig);
-      const url = `${window.location.origin}${window.location.pathname}?config=${encoded}`;
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- share URL handling is reworked in CFG-147
-      setShareUrl(url);
-    }
-  }, [showShareModal, currentConfig]);
-
-  useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const encodedConfig = params.get('config');
 
     if (encodedConfig) {
       const decoded = decodeConfigurationFromUrl(encodedConfig);
       if (decoded) {
-        /* eslint-disable react-hooks/set-state-in-effect -- one-off hydration from URL, revisited in CFG-147 */
+        /* eslint-disable react-hooks/set-state-in-effect -- one-off hydration from the URL on mount */
         if (decoded.selections) setSelections(decoded.selections);
         if (decoded.addOns) setSelectedAddOns(decoded.addOns);
         if (decoded.quantity) setQuantity(decoded.quantity);
+        if (decoded.name) setDraftName(decoded.name);
         /* eslint-enable react-hooks/set-state-in-effect */
       }
     }
