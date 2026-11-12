@@ -467,6 +467,26 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
 
   const renderColorOption = (option: ProductOption) => {
     const currentValue = selections[option.id] as string;
+    const choices = option.choices ?? [];
+
+    // Roving tabindex: the group is a single tab stop (the selected swatch, or the first one),
+    // and arrow keys move between swatches.
+    const selectedIndex = choices.findIndex((c) => c.value === currentValue);
+    const tabStopIndex = selectedIndex >= 0 ? selectedIndex : 0;
+
+    const handleSwatchKeyDown = (e: React.KeyboardEvent, index: number) => {
+      const step = ['ArrowRight', 'ArrowDown'].includes(e.key)
+        ? 1
+        : ['ArrowLeft', 'ArrowUp'].includes(e.key)
+          ? -1
+          : 0;
+      if (step === 0 || readOnly) return;
+
+      e.preventDefault();
+      const nextIndex = (index + step + choices.length) % choices.length;
+      handleOptionChange(option.id, choices[nextIndex].value);
+      colorPickerRef.current?.querySelectorAll<HTMLElement>('[role="radio"]')[nextIndex]?.focus();
+    };
 
     return (
       <div className="option-group" key={option.id}>
@@ -480,15 +500,20 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
           role="radiogroup"
           aria-label={option.name}
         >
-          {option.choices?.map((choice, index) => (
-            <div
-              key={index}
+          {choices.map((choice, index) => (
+            <button
+              key={choice.id}
+              type="button"
               className={`color-swatch ${currentValue === choice.value ? 'selected' : ''}`}
               style={{ backgroundColor: choice.colorHex }}
-              onClick={() => !readOnly && handleOptionChange(option.id, choice.value)}
+              onClick={() => handleOptionChange(option.id, choice.value)}
+              onKeyDown={(e) => handleSwatchKeyDown(e, index)}
               title={choice.label}
               role="radio"
               aria-checked={currentValue === choice.value}
+              aria-label={choice.label}
+              tabIndex={index === tabStopIndex ? 0 : -1}
+              disabled={readOnly}
             />
           ))}
         </div>

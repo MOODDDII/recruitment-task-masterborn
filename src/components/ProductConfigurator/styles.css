@@ -110,6 +110,7 @@
   height: 36px;
   border-radius: 50%;
   border: 2px solid transparent;
+  padding: 0;
   cursor: pointer;
   transition:
     transform 0.2s,
@@ -619,8 +620,10 @@
   outline-offset: 2px;
 }
 
-/* Missing focus style for color swatches - accessibility issue */
-/* .color-swatch:focus { } */
+.color-swatch:focus-visible {
+  outline: 2px solid #3498db;
+  outline-offset: 2px;
+}
 
 /* Draft List in Modal */
 .draft-list {
