@@ -45,6 +45,12 @@
 }
 
 @media (max-width: 900px) {
+  .configurator-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
   .configurator-layout {
     grid-template-columns: 1fr;
   }
