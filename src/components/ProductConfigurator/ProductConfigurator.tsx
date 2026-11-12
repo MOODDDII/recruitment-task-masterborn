@@ -152,6 +152,7 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
 
   const [isDirty, setIsDirty] = useState(false);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
+  const [lastSavedDraftId, setLastSavedDraftId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
 
   const [showDraftModal, setShowDraftModal] = useState(false);
@@ -374,8 +375,9 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
 
   const handleSaveDraft = useCallback(async () => {
     try {
-      await saveDraft(currentConfig, draftName || 'Untitled Draft');
+      const saved = await saveDraft(currentConfig, draftName || 'Untitled Draft');
       setLastSaved(new Date());
+      setLastSavedDraftId(saved.id);
       setIsDirty(false);
       setDraftName('');
 
@@ -400,14 +402,23 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
     }
   }, []);
 
-  const handleDeleteDraft = useCallback(async (draftId: string) => {
-    try {
-      await deleteDraft(draftId);
-      setDrafts((prev) => prev.filter((d) => d.id !== draftId));
-    } catch {
-      setError(ERROR_CODES.UNKNOWN);
-    }
-  }, []);
+  const handleDeleteDraft = useCallback(
+    async (draftId: string) => {
+      try {
+        await deleteDraft(draftId);
+        setDrafts((prev) => prev.filter((d) => d.id !== draftId));
+
+        // Hide the "Draft saved" panel if it refers to the draft that was just deleted
+        if (draftId === lastSavedDraftId) {
+          setLastSaved(null);
+          setLastSavedDraftId(null);
+        }
+      } catch {
+        setError(ERROR_CODES.UNKNOWN);
+      }
+    },
+    [lastSavedDraftId],
+  );
 
   const handleAddToCart = useCallback(() => {
     setError(null);
