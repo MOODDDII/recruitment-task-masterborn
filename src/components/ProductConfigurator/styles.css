@@ -375,7 +375,14 @@
   font-size: 14px;
 }
 
-.price-loading {
+/* Dim only the figures while the price is recalculating (not the whole panel) */
+.price-value,
+.price-breakdown {
+  transition: opacity 0.2s;
+}
+
+.price-loading .price-value,
+.price-loading .price-breakdown {
   opacity: 0.5;
 }
 

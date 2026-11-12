@@ -230,6 +230,8 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
 
     window.addEventListener('resize', handleResize);
     handleResize();
+
+    return () => window.removeEventListener('resize', handleResize);
   }, []);
 
   useEffect(() => {
@@ -920,7 +922,14 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
 
           <div className={`price-display ${isPriceLoading ? 'price-loading' : ''}`}>
             <div className="price-label">Total Price</div>
-            <div className="price-value">{formattedTotal}</div>
+            <div
+              className="price-value"
+              aria-live="polite"
+              aria-atomic="true"
+              aria-busy={isPriceLoading}
+            >
+              {formattedTotal}
+            </div>
 
             {renderPriceBreakdown()}
 
