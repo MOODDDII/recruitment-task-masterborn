@@ -104,6 +104,25 @@ const calculateColorColumns = (
   return Math.max(1, columns);
 };
 
+const DEFAULT_ERROR_MESSAGE =
+  'Something went wrong. Please try again, or contact support if the problem continues.';
+
+// User facing messages for internal error codes. Each one says what happened and what to do next.
+const ERROR_MESSAGES: Record<string, string> = {
+  [ERROR_CODES.PRICE_CALC_FAILED]:
+    "We couldn't update the price. Please try again in a moment, or contact support if it keeps happening.",
+  [ERROR_CODES.NETWORK_TIMEOUT]:
+    'The price is taking too long to load. Please check your connection and try again.',
+  [ERROR_CODES.VALIDATION_CONFLICT]:
+    "Some of your selections don't work together. Please review your options and try again.",
+  [ERROR_CODES.DEPENDENCY_MISSING]:
+    'This add-on needs another option to be selected first. Please check the add-on description.',
+  [ERROR_CODES.INVALID_QUANTITY]: 'Please enter a quantity of at least 1.',
+  [ERROR_CODES.UNKNOWN]: DEFAULT_ERROR_MESSAGE,
+};
+
+const getErrorMessage = (code: string): string => ERROR_MESSAGES[code] ?? DEFAULT_ERROR_MESSAGE;
+
 // ============================================================================
 // Main Component
 // ============================================================================
@@ -174,6 +193,8 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
     isLoading: isPriceLoading,
     error: priceError,
   } = usePriceCalculation(currentConfig, product);
+
+  const errorCode = error || priceError;
 
   const appliedDiscount = getAppliedDiscountPercentage(quantity);
   const nextTier = getNextDiscountTier(quantity);
@@ -291,6 +312,7 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
 
   const handleOptionChange = useCallback(
     (optionId: string, value: string | number | boolean) => {
+      setError(null);
       setSelections((prev) => ({
         ...prev,
         [optionId]: value,
@@ -314,6 +336,7 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
       const addOn = product.addOns.find((a) => a.id === addOnId);
       if (!addOn) return;
 
+      setError(null);
       if (!isAddOnAvailable(addOn, selections)) {
         setError(ERROR_CODES.DEPENDENCY_MISSING);
         return;
@@ -332,6 +355,7 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
 
   const handleQuantityChange = useCallback(
     (newQuantity: number) => {
+      setError(null);
       const quantityOption = product.options.find((o) => o.type === 'quantity');
       const min = quantityOption?.min ?? 1;
       const max = quantityOption?.max ?? 999;
@@ -380,6 +404,7 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
   }, []);
 
   const handleAddToCart = useCallback(() => {
+    setError(null);
     if (!validation?.valid) {
       setError(validation?.errors[0]?.code || ERROR_CODES.UNKNOWN);
       return;
@@ -862,10 +887,9 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
         </div>
       </div>
 
-      {(error || priceError) && (
-        <div className="error-message">
-          <div>Something went wrong. Please try again.</div>
-          <div className="error-code">Error: {error || priceError}</div>
+      {errorCode && (
+        <div className="error-message" data-error-code={errorCode}>
+          {getErrorMessage(errorCode)}
         </div>
       )}
 
