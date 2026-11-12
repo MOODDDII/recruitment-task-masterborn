@@ -18,7 +18,7 @@
  * - "Resize handler might have a leak" - Marcus
  */
 
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useEffectEvent, useCallback, useMemo, useRef } from 'react';
 import type {
   Product,
   ProductOption,
@@ -277,10 +277,14 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
     };
   }, [currentConfig, product]);
 
+  // Reads the latest config and callback without making them effect dependencies, so the effect
+  // keeps firing only when the configuration itself changes (not e.g. when typing a draft name).
+  const notifyConfigurationChange = useEffectEvent(() => {
+    onConfigurationChange?.(currentConfig);
+  });
+
   useEffect(() => {
-    if (onConfigurationChange) {
-      onConfigurationChange(currentConfig);
-    }
+    notifyConfigurationChange();
     // eslint-disable-next-line react-hooks/set-state-in-effect -- dirty tracking is reworked in CFG-157
     setIsDirty(true);
   }, [selections, selectedAddOns, quantity]);
